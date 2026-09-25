@@ -9,10 +9,12 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.Assert;
 import org.springframework.util.unit.DataSize;
 import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.core.sync.ResponseTransformer;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.*;
 
 import java.io.BufferedInputStream;
+import java.io.File;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -44,6 +46,38 @@ public class Storage {
 	public void write(URI uri, Resource resource, MediaType mediaType) {
 		this.validUri(uri);
 		this.write(uri.getHost(), uri.getPath(), resource, mediaType);
+	}
+
+	/**
+	 * reads an object <em>out</em> of S3 and onto local disk, for the benefit of the
+	 * tools -- {@code ffmpeg}, {@code magick} -- that insist on a path and won't look at
+	 * an {@link java.io.InputStream}.
+	 */
+	public void read(String bucket, String objectName, File destination) {
+		// the SDK refuses to write over an existing file, and a temp file is created
+		// the moment it is named, so clear the placeholder out of the way first.
+		if (destination.exists())
+			Assert.state(destination.delete(), () -> "could not clear the local file [" + destination + "]");
+		this.log.debug("reading [{}/{}] into [{}]", bucket, objectName, destination.getAbsolutePath());
+		var request = GetObjectRequest.builder().bucket(bucket).key(objectName).build();
+		this.s3.getObject(request, ResponseTransformer.toFile(destination));
+		Assert.state(destination.exists(), () -> "the read of [" + bucket + "/" + objectName + "] produced no file");
+	}
+
+	/**
+	 * writes a file from local disk <em>into</em> S3 in a single PUT. the SDK knows the
+	 * content length up front this way, so there's no reason to pay for the multipart
+	 * dance that {@link #write(String, String, Resource, MediaType)} has to do when all
+	 * it's been handed is a stream.
+	 */
+	public void write(String bucket, String objectName, File file, MediaType mediaType) {
+		Assert.state(file.exists() && file.isFile(), () -> "the file [" + file + "] must exist to be written");
+		this.log.debug("writing [{}] ({} bytes) to [{}/{}]", file.getAbsolutePath(), file.length(), bucket, objectName);
+		this.ensureBucketExists(bucket);
+		var builder = PutObjectRequest.builder().bucket(bucket).key(objectName);
+		if (mediaType != null)
+			builder = builder.contentType(mediaType.toString());
+		this.s3.putObject(builder.build(), RequestBody.fromFile(file));
 	}
 
 	/*
