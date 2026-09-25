@@ -204,7 +204,7 @@ public class Storage {
 	}
 
 	protected void ensureBucketExists(String bucketName) {
-		if (bucketExists(bucketName)) {
+		if (this.bucketExists(bucketName)) {
 			this.log.trace("the bucket named [{}] already exists", bucketName);
 			return;
 		}
