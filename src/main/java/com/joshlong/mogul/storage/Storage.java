@@ -162,9 +162,17 @@ public class Storage {
 		this.s3.copyObject(result);
 	}
 
-	public long contentLength(String bucket, String key) {
+	public record ObjectMetadata(long contentLength, String etag) {
+	}
+
+	public ObjectMetadata metadata(String bucket, String key) {
 		var request = HeadObjectRequest.builder().bucket(bucket).key(key).build();
-		return this.s3.headObject(request).contentLength();
+		var head = this.s3.headObject(request);
+		return new ObjectMetadata(head.contentLength(), head.eTag());
+	}
+
+	public long contentLength(String bucket, String key) {
+		return this.metadata(bucket, key).contentLength();
 	}
 
 	public boolean exists(String bucket, String key) {
