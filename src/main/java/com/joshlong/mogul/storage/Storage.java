@@ -25,6 +25,23 @@ public class Storage {
 
 	private final Logger log = LoggerFactory.getLogger(getClass());
 
+	/**
+	 * what every object this class writes is told about its own cacheability.
+	 * <p>
+	 * a managed file's key never changes, so a re-rendered episode lands at the URL the
+	 * old one is already cached under. the way out is not a shorter TTL -- it is that
+	 * callers address these objects with a {@code ?v=<etag>} that changes when the bytes
+	 * do, which makes each version a distinct thing that can then be cached as hard as
+	 * you like.
+	 * <p>
+	 * that only holds while the CDN actually keys on {@code v}. if the distribution's
+	 * cache policy drops query strings, every version collides on one entry and this
+	 * header pins whichever one got there first for a year. see
+	 * {@code pipeline/bin/cloudfront_cache_policy.sh}, which is what puts {@code v} in
+	 * the cache key; it has to be in place before this reaches production.
+	 */
+	private static final String CACHE_CONTROL = "public, max-age=31536000, immutable";
+
 	private final S3Client s3;
 
 	public Storage(S3Client s3) {
@@ -74,7 +91,7 @@ public class Storage {
 		Assert.state(file.exists() && file.isFile(), () -> "the file [" + file + "] must exist to be written");
 		this.log.debug("writing [{}] ({} bytes) to [{}/{}]", file.getAbsolutePath(), file.length(), bucket, objectName);
 		this.ensureBucketExists(bucket);
-		var builder = PutObjectRequest.builder().bucket(bucket).key(objectName);
+		var builder = PutObjectRequest.builder().bucket(bucket).key(objectName).cacheControl(CACHE_CONTROL);
 		if (mediaType != null)
 			builder = builder.contentType(mediaType.toString());
 		this.s3.putObject(builder.build(), RequestBody.fromFile(file));
@@ -87,7 +104,10 @@ public class Storage {
 			MediaType mediaType) throws Exception {
 		try (var inputStream = new BufferedInputStream(resource.getInputStream())) {
 			var chunkSize = (int) maxSize.toBytes();
-			var builder = CreateMultipartUploadRequest.builder().bucket(bucketName).key(keyName);
+			var builder = CreateMultipartUploadRequest.builder()
+				.bucket(bucketName)
+				.key(keyName)
+				.cacheControl(CACHE_CONTROL);
 			if (mediaType != null)
 				builder = builder.contentType(mediaType.toString());
 			var createMultipartUploadRequest = builder.build();
@@ -148,10 +168,18 @@ public class Storage {
 		return false;
 	}
 
-	/* much faster than downloading the bytes and trying to write them back up again! */
+	/*
+	 * much faster than downloading the bytes and trying to write them back up again!
+	 *
+	 * this is also the one write that the CDN actually sees: it is how an object reaches
+	 * the visible bucket, which is what the distribution is pointed at. setting the
+	 * cache-control on the PUT and not here would leave every public object without one.
+	 * METADATA_DIRECTIVE is already REPLACE, so it costs nothing to say.
+	 */
 	public void copy(String src, String dest, String key, MediaType newContentType) {
 		var copyRequestBuilder = CopyObjectRequest.builder()
 			.metadataDirective("REPLACE")
+			.cacheControl(CACHE_CONTROL)
 			.sourceBucket(src)
 			.sourceKey(key)
 			.destinationBucket(dest)
