@@ -12,10 +12,12 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.core.sync.ResponseTransformer;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.*;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
 import java.io.BufferedInputStream;
 import java.io.File;
 import java.net.URI;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Objects;
@@ -44,8 +46,36 @@ public class Storage {
 
 	private final S3Client s3;
 
+	private final S3Presigner presigner;
+
 	public Storage(S3Client s3) {
+		this(s3, null);
+	}
+
+	public Storage(S3Client s3, S3Presigner presigner) {
 		this.s3 = s3;
+		this.presigner = presigner;
+	}
+
+	/**
+	 * a url that anyone holding it can read the object from, without credentials, until
+	 * {@code ttl} has passed. this is for handing a file to a third party that fetches it
+	 * itself, so the bytes never pass through us. every blob store worth the name has one
+	 * of these, and none of them call it the same thing.
+	 */
+	public URI temporaryReadUri(String bucket, String key, Duration ttl) {
+		Assert.state(this.presigner != null, "this Storage can't make temporary urls");
+		Assert.hasText(bucket, "the bucket must not be empty");
+		Assert.hasText(key, "the key must not be empty");
+		Assert.state(ttl != null && !ttl.isNegative() && !ttl.isZero(), "the ttl must be positive");
+		var request = this.presigner.presignGetObject(
+				presign -> presign.signatureDuration(ttl).getObjectRequest(get -> get.bucket(bucket).key(key)));
+		try {
+			return request.url().toURI();
+		} //
+		catch (java.net.URISyntaxException e) {
+			throw new IllegalStateException("the temporary url for [" + bucket + "/" + key + "] is not a uri", e);
+		}
 	}
 
 	public void remove(URI uri) {
